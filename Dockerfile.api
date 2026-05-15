@@ -1,0 +1,21 @@
+# Build stage
+FROM rust:1.77-slim as builder
+
+WORKDIR /app
+COPY . .
+
+# Build the standalone API binary
+RUN cd src-tauri && cargo build --release --bin velocity-api
+
+# Run stage
+FROM debian:bookworm-slim
+
+WORKDIR /app
+COPY --from=builder /app/src-tauri/target/release/velocity-api /app/velocity-api
+
+# Install required SSL certs for reqwest
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+EXPOSE 3000
+
+CMD ["./velocity-api"]
