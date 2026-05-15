@@ -1,7 +1,10 @@
+mod engine;
+mod engine_data;
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_shell::ShellExt;
 use sha2::{Sha256, Digest};
 use hex;
@@ -254,6 +257,28 @@ async fn cleanup_temp_files(app: tauri::AppHandle) -> Result<String, String> {
     Ok(format!("Cleaned up {} temp files", count))
 }
 
+fn ensure_scripts(app: &AppHandle) -> Result<PathBuf, String> {
+    let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("engine");
+    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+
+    let scripts = [
+        ("rl_asset_swapper.py", engine_data::ASSET_SWAPPER_PY),
+        ("rl_upk_editor.py", engine_data::UPK_EDITOR_PY),
+        ("rl_catalog_fetcher.py", engine_data::CATALOG_FETCHER_PY),
+        ("rl_injector.py", engine_data::INJECTOR_PY),
+        ("rl_memory_patcher.py", engine_data::MEMORY_PATCHER_PY),
+        ("items.json", engine_data::ITEMS_JSON),
+        ("keys.txt", engine_data::KEYS_TXT),
+    ];
+
+    for (name, content) in scripts {
+        let dest = cache_dir.join(name);
+        fs::write(dest, content).map_err(|e| e.to_string())?;
+    }
+
+    Ok(cache_dir)
+}
+
 #[tauri::command]
 async fn fetch_catalog(app: tauri::AppHandle, token: String, account: String) -> Result<String, String> {
     let sidecar = app.shell().sidecar("velocity-engine").map_err(|e| e.to_string())?;
@@ -273,24 +298,33 @@ async fn fetch_catalog(app: tauri::AppHandle, token: String, account: String) ->
 
 #[tauri::command]
 async fn apply_swap(app: tauri::AppHandle, owned_id: String, wanted_id: String) -> Result<String, String> {
+    let items = get_items(app.clone()).await?;
+    
+    let target = items.iter().find(|i| i.id.to_string() == owned_id).ok_or("Target item not found")?;
+    let donor = items.iter().find(|i| i.id.to_string() == wanted_id).ok_or("Donor item not found")?;
+
     let config = get_config(app.clone()).await?;
     if config.game_dir.is_empty() { return Err("Game directory not set".to_string()); }
-    let items_path = app.path().resolve("python/items.json", tauri::path::BaseDirectory::Resource)
-        .or_else(|_| app.path().resolve("_up_/python/items.json", tauri::path::BaseDirectory::Resource))
-        .map_err(|e| e.to_string())?;
+    let game_dir = std::path::PathBuf::from(&config.game_dir);
     
-    let sidecar = app.shell().sidecar("velocity-engine").map_err(|e| e.to_string())?;
-    let output = sidecar
-        .arg("--no-gui")
-        .arg("--items").arg(items_path)
-        .arg("--target").arg(owned_id)
-        .arg("--donor").arg(wanted_id)
-        .arg("--overwrite")
-        .arg("--donor-dir").arg(&config.game_dir)
-        .arg("--output-dir").arg(&config.game_dir)
-        .output().await.map_err(|e| e.to_string())?;
-    if output.status.success() { Ok("Swap completed successfully".to_string()) }
-    else { Err(format!("Engine error: {}", String::from_utf8_lossy(&output.stderr))) }
+    let e_target = crate::engine::swapper::Item {
+        id: serde_json::json!(target.id),
+        product: target.product.clone(),
+        asset_package: target.asset_package.clone(),
+        asset_path: "".to_string(), // TODO: add asset_path to Item struct
+        slot: target.slot.clone(),
+    };
+    let e_donor = crate::engine::swapper::Item {
+        id: serde_json::json!(donor.id),
+        product: donor.product.clone(),
+        asset_package: donor.asset_package.clone(),
+        asset_path: "".to_string(),
+        slot: donor.slot.clone(),
+    };
+
+    crate::engine::swapper::swap_asset(&e_target, &e_donor, &game_dir).map_err(|e| e.to_string())?;
+    
+    Ok("Swap completed successfully (Native)".to_string())
 }
 
 #[tauri::command]

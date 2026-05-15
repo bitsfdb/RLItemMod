@@ -2,7 +2,7 @@
 name = "velocity-rl"
 version = "1.1.0"
 description = "A Tauri App"
-authors = ["you"]
+authors = ["bitsfdb"]
 license = ""
 repository = ""
 edition = "2021"
@@ -30,3 +30,15 @@ tauri-plugin-process = "2"
 sha2 = "0.10.9"
 hex = "0.4.3"
 reqwest = { version = "0.13.3", features = ["json"] }
+byteorder = "1.5"
+aes = "0.8"
+ecb = "0.1"
+block-modes = "0.9"
+minilzo-rs = "0.6"
+tokio = { version = "1", features = ["full"] }
+hmac = "0.12.1"
+base64 = "0.22.1"
+
+[[bin]]
+name = "velocity-api"
+path = "src/api_main.rs"

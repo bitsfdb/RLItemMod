@@ -92,9 +92,12 @@ def default_path(names: Sequence[str]) -> Path:
             here.parent / "resources" / name,
             here.parent.parent / "python" / name,
             here.parent.parent / "resources" / "python" / name,
+            here.parent.parent.parent / "python" / name,
+            here.parent.parent.parent / "resources" / "python" / name,
             Path.cwd() / name,
             Path.cwd() / "python" / name,
             Path.cwd() / "resources" / "python" / name,
+            Path.cwd().parent / "python" / name,
         ]
         if getattr(sys, "_MEIPASS", None):
             candidates.insert(0, Path(sys._MEIPASS) / name)
@@ -123,9 +126,12 @@ def import_rl_upk_editor():
             here.parent / "resources" / name,
             here.parent.parent / "python" / name,
             here.parent.parent / "resources" / "python" / name,
+            here.parent.parent.parent / "python" / name,
+            here.parent.parent.parent / "resources" / "python" / name,
             Path.cwd() / name,
             Path.cwd() / "python" / name,
             Path.cwd() / "resources" / "python" / name,
+            Path.cwd().parent / "python" / name,
         ])
         if getattr(sys, "_MEIPASS", None):
             candidates.insert(0, Path(sys._MEIPASS) / name)

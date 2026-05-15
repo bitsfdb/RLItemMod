@@ -32,15 +32,8 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "../python/items.json",
-      "../python/keys.txt",
-      "../python/engine.sha256",
-      "../python/rl_upk_editor.py"
-    ],
-    "externalBin": [
-      "bin/velocity-engine"
-    ],
+    "resources": [],
+    "externalBin": [],
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }
