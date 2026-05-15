@@ -54,7 +54,18 @@ async fn handle_fetch_catalog(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(params): Json<FetchParams>,
 ) -> Result<Json<Value>, String> {
-    let mut client = PsynetClient::new(params.token);
+    use crate::engine::psynet::{EpicAuth, EPIC_LAUNCHER_CLIENT_ID};
+
+    // If the token looks like an exchange code, exchange it for a ticket
+    let ticket = if params.token.len() < 64 {
+        let epic = EpicAuth::new(EPIC_LAUNCHER_CLIENT_ID);
+        let auth = epic.exchange_code(&params.token).await?;
+        auth["access_token"].as_str().ok_or("No access token in Epic response")?.to_string()
+    } else {
+        params.token
+    };
+
+    let mut client = PsynetClient::new(ticket);
     client.login(&params.account).await.map_err(|e| e.to_string())?;
     
     let products = client.get_all_products().await.map_err(|e| e.to_string())?;

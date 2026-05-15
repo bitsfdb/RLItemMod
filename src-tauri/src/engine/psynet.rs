@@ -23,6 +23,40 @@ pub struct PsynetResponse<T> {
     pub result: T,
 }
 
+pub const EPIC_LAUNCHER_CLIENT_ID: &str = "34a02cf8f4414e29b15921876da36f9a";
+
+pub struct EpicAuth {
+    pub client_id: String,
+}
+
+impl EpicAuth {
+    pub fn new(client_id: &str) -> Self {
+        Self { client_id: client_id.to_string() }
+    }
+
+    pub async fn exchange_code(&self, code: &str) -> Result<serde_json::Value, String> {
+        let client = reqwest::Client::new();
+        let body = [
+            ("grant_type", "exchange_code"),
+            ("exchange_code", code),
+            ("client_id", &self.client_id),
+            ("token_type", "eg1"),
+        ];
+
+        let resp = client.post("https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token")
+            .form(&body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if resp.status() != 200 {
+            return Err(format!("Epic Auth failed: {} - {}", resp.status(), resp.text().await.unwrap_or_default()));
+        }
+
+        resp.json().await.map_err(|e| e.to_string())
+    }
+}
+
 pub struct PsynetClient {
     pub auth_ticket: String,
     pub session_id: Option<String>,
