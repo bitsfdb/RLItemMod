@@ -1,80 +1,38 @@
-# VelocityRL 🚀
+# VelocityRL
 
-A powerful, user-friendly tool for performing visual asset swaps in Rocket League.
-
-> **Note**: The NPM package for this tool is named `rl-item-mod`.
+A powerful, user-friendly native Rust engine and Tauri desktop app for performing visual asset swaps in Rocket League.
 
 ## Overview
 
-**VelocityRL** provides an interactive terminal wizard and a premium desktop interface that allows you to swap in-game items (e.g., swapping a standard boost for Alpha Reward). Under the hood, it seamlessly invokes an advanced Python engine to accurately parse `.upk` encryption, perfectly expand Name Table string offsets, and rebuild the package architecture without causing game crashes.
+**VelocityRL** provides a premium desktop interface that allows you to swap in-game items (e.g., swapping a standard boost for Alpha Reward). It uses a 100% native Rust engine to parse UPK files, handle AES decryption, LZO/ZLIB decompression, and perform structural structural re-alignment via the "Dummy Pivot" technique.
 
 ## Features
 
-- **Interactive Wizard**: A beautiful command-line interface to search for and select your source and target items.
-- **Python Interop**: Leverages a robust Python backend to handle complex LZO decompression, AES decryption, and binary offset shifting.
-- **Automated Backups**: Automatically backs up original game assets before patching, with a one-click CLI restore feature.
-- **Item Database**: Uses a built-in `items.json` database for fuzzy-searching and mapping in-game item names directly to their underlying UPK files.
+- **100% Native Rust Engine**: High-performance UPK manipulation without Python dependencies.
+- **Dummy Pivot Architecture**: Safe asset swapping that preserves package integrity and prevents game crashes.
+- **Tauri Desktop UI**: A sleek, modern interface for managing your item collection and performing swaps.
+- **Psynet API Server**: A standalone Axum-powered web server for hosting the item database.
+- **Automated Backups**: Automatically backs up original game assets before patching, with easy restore features.
 
-## ⚠️ Warning - Some Swaps Will Crash the Game
+## API Hosting
 
-> **Swapping certain asset types is not yet fully supported and will cause Rocket League to crash on load.** This is a known limitation of the current version and is being worked on. Until a fix is released, avoid swapping the following:
+To run the standalone API server (for `api.velocityrl.me`):
 
-> Thumbnails in general cause a lot of crashes, as well as bodies and goal explosions.
+```bash
+cd src-tauri
+cargo run --bin velocity-api
+```
 
-> If a swap you attempt causes a crash, you should validate game files, and when a crash occurs on an item use the **Restore backups** as shown in this screenshot
-
-<img width="571" height="298" alt="image" src="https://github.com/user-attachments/assets/e09d09eb-1e0e-499c-9ddd-74fea68163d0" />
+The server runs on port `3000` by default.
 
 ## Installation
 
-### Prerequisites
+1. Clone the repository.
+2. Install Rust and Node.js.
+3. Run `npm install` and `npm run dev` to start the app.
 
-- Node.js (v18+)
-- Python 3.8+ (must be available in your system PATH)
+## Development
 
-### Global Install (Recommended)
-
-```bash
-npm install -g rl-item-mod
-```
-
-```bash
-pip install cryptography
-```
-
-### Local Development
-
-```bash
-git clone https://github.com/bitsfdb/RLItemMod.git
-cd RLItemMod
-npm install
-npm run build
-npm link
-```
-
-## Usage
-
-Simply launch the interactive wizard from your terminal:
-
-```bash
-rl-item-mod
-```
-
-Or run directly via npx:
-
-```bash
-npx rl-item-mod@latest
-```
-
-## Credits
-
-Massive credits to [CrunchyRL/RLUPKTools](https://github.com/CrunchyRL/RLUPKTools) for making this repository possible. The advanced Python engineering for parsing and shifting Unreal Engine 3 UPK binaries was instrumental in making this project work safely.
-
-## Support
-
-Contact me on discord: @sfdb
-Or on the support server https://discord.gg/2HhBNbrGMj
-
-## License
-
-MIT
+- `src-tauri/src/engine`: The core Rust engine.
+- `src-tauri/src/api_main.rs`: Standalone API server.
+- `ui/`: The React-based frontend.
