@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 
 pub const PACKAGE_FILE_TAG: u32 = 0x9E2A83C1;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct FNameRef {
     pub name_index: i32,
     pub instance_number: i32,
@@ -131,7 +131,6 @@ pub trait UE3ReadExt: Read + Seek {
         }
 
         if length < 0 {
-            // UTF-16
             let char_count = (-length) as usize;
             let mut buf = vec![0u8; char_count * 2];
             self.read_exact(&mut buf)?;
@@ -142,7 +141,6 @@ pub trait UE3ReadExt: Read + Seek {
             let s = String::from_utf16_lossy(&u16_buf);
             Ok(s.trim_end_matches('\0').to_string())
         } else {
-            // ANSI (Windows-1252 style, but usually just ASCII for our needs)
             let mut buf = vec![0u8; length as usize];
             self.read_exact(&mut buf)?;
             let s = String::from_utf8_lossy(&buf);
@@ -168,6 +166,8 @@ pub trait UE3WriteExt: Write + Seek {
         Ok(())
     }
 }
+
+impl<W: Write + Seek> UE3WriteExt for W {}
 
 pub struct ParsedPackage {
     pub file_path: PathBuf,
@@ -251,11 +251,8 @@ pub fn parse_file_summary<R: Read + Seek>(mut reader: R) -> std::io::Result<File
     let import_count = reader.read_i32::<LittleEndian>()?;
     let import_offset = reader.read_i32::<LittleEndian>()?;
     let depends_offset = reader.read_i32::<LittleEndian>()?;
-    
-    // Skip some bytes to get to GUID and flags
-    reader.seek(SeekFrom::Current(12))?; // import_export_guids_offset, import_guids_count, export_guids_count
-    reader.seek(SeekFrom::Current(4))?;  // thumbnail_table_offset
-    
+    reader.seek(SeekFrom::Current(12))?;
+    reader.seek(SeekFrom::Current(4))?;
     let mut guid = [0u32; 4];
     for i in 0..4 {
         guid[i] = reader.read_u32::<LittleEndian>()?;
@@ -263,11 +260,10 @@ pub fn parse_file_summary<R: Read + Seek>(mut reader: R) -> std::io::Result<File
 
     let generation_count = reader.read_i32::<LittleEndian>()?;
     for _ in 0..generation_count {
-        reader.seek(SeekFrom::Current(12))?; // export_count, name_count, net_object_count
+        reader.seek(SeekFrom::Current(12))?;
     }
 
-    reader.seek(SeekFrom::Current(8))?; // engine_version, cooker_version
-    
+    reader.seek(SeekFrom::Current(8))?;
     let compression_flags = reader.read_u32::<LittleEndian>()?;
     let compressed_chunk_count = reader.read_i32::<LittleEndian>()?;
     let mut compressed_chunks = Vec::new();
@@ -340,16 +336,13 @@ pub fn parse_export_entry<R: Read + Seek>(mut reader: R, table_index: i32) -> st
     let archetype_index = reader.read_i32::<LittleEndian>()?;
     let object_flags = reader.read_u64::<LittleEndian>()?;
     let serial_size = reader.read_i32::<LittleEndian>()?;
-    let serial_offset = reader.read_i32::<LittleEndian>()?; // Note: actually i64 in some versions, but i32 for RL
+    let serial_offset = reader.read_i32::<LittleEndian>()?;
     let export_flags = reader.read_u32::<LittleEndian>()?;
-    
-    // Read net_objects (TArray<i32>)
     let net_count = reader.read_i32::<LittleEndian>()?;
     let mut net_objects = Vec::with_capacity(net_count as usize);
     for _ in 0..net_count {
         net_objects.push(reader.read_i32::<LittleEndian>()?);
     }
-    
     let mut package_guid = [0u32; 4];
     for i in 0..4 {
         package_guid[i] = reader.read_u32::<LittleEndian>()?;

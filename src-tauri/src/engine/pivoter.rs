@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use byteorder::{WriteBytesExt, LittleEndian};
+use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 use crate::engine::upk::*;
 
 pub struct SummaryOffsets {
@@ -60,42 +60,32 @@ pub fn find_summary_offsets(data: &[u8]) -> std::io::Result<SummaryOffsets> {
     }
     reader.read_u16::<LittleEndian>()?;
     reader.read_u16::<LittleEndian>()?;
-    
     let total_header_size_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
     reader.read_fstring()?;
-    
     let package_flags_offset = reader.position() as usize;
     reader.read_u32::<LittleEndian>()?;
-    
     let name_count_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
     let name_offset_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
-    
     let export_count_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
     let export_offset_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
-    
     let import_count_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
     let import_offset_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
-    
     let depends_offset_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
-    
     let import_export_guids_offset_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
     reader.read_i32::<LittleEndian>()?;
     reader.read_i32::<LittleEndian>()?;
-    
     let thumbnail_table_offset_offset = reader.position() as usize;
     reader.read_i32::<LittleEndian>()?;
-    
-    for _ in 0..4 { reader.read_u32::<LittleEndian>()?; } // GUID
-    
+    for _ in 0..4 { reader.read_u32::<LittleEndian>()?; }
     let generations_count_offset = reader.position() as usize;
     let generation_count = reader.read_i32::<LittleEndian>()?;
     let generation_entries_offset = reader.position() as usize;
@@ -134,7 +124,6 @@ pub fn replace_header_tables(package: &ParsedPackage, names: &[NameEntry], impor
     let imports_blob: Vec<u8> = imports.iter().flat_map(|i| i.serialize()).collect();
 
     let export_offset = (package.summary.name_offset as usize) + names_blob.len() + imports_blob.len();
-    
     let mut patched_exports = package.exports.clone();
     let export_size: usize = patched_exports.iter().map(|e| e.serialize().len()).sum();
     let depends_offset = export_offset + export_size;
@@ -149,7 +138,6 @@ pub fn replace_header_tables(package: &ParsedPackage, names: &[NameEntry], impor
     }
 
     let exports_blob: Vec<u8> = patched_exports.iter().flat_map(|e| e.serialize()).collect();
-    
     new_data.extend_from_slice(&names_blob);
     new_data.extend_from_slice(&imports_blob);
     new_data.extend_from_slice(&exports_blob);
@@ -162,9 +150,13 @@ pub fn replace_header_tables(package: &ParsedPackage, names: &[NameEntry], impor
     patch_i32(&mut new_data, offsets.import_offset_offset, (package.summary.name_offset as usize + names_blob.len()) as i32);
     patch_i32(&mut new_data, offsets.depends_offset_offset, depends_offset as i32);
 
-    let mut import_export_guids_offset = package.summary.import_export_guids_offset;
-    if import_export_guids_offset >= old_depends_offset as i32 && import_export_guids_offset != 0 {
-        import_export_guids_offset += delta;
+    let import_export_guids_offset_val = {
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&package.file_bytes[offsets.import_export_guids_offset_offset..offsets.import_export_guids_offset_offset + 4]);
+        i32::from_le_bytes(buf)
+    };
+    if import_export_guids_offset_val >= old_depends_offset as i32 && import_export_guids_offset_val != 0 {
+        patch_i32(&mut new_data, offsets.import_export_guids_offset_offset, import_export_guids_offset_val + delta);
     }
 
     new_data.extend_from_slice(&package.file_bytes[old_depends_offset..]);
@@ -184,7 +176,6 @@ pub fn merge_donor_exports_as_imports(target: &ParsedPackage, donor: &ParsedPack
 
     let mut donor_cache: HashMap<i32, i32> = HashMap::new();
 
-    // Ensure package root
     let root_idx = {
         if let Some(&idx) = existing_paths.get(donor_package_name) {
             idx
@@ -229,7 +220,7 @@ pub fn merge_donor_exports_as_imports(target: &ParsedPackage, donor: &ParsedPack
         let (obj_name_str, outer_idx_orig, class_pkg_str, class_name_str) = if idx > 0 {
             let exp = &donor.exports[(idx - 1) as usize];
             let name = donor.resolve_name(exp.object_name);
-            let class_pkg = "Core".to_string(); // Placeholder
+            let class_pkg = "Core".to_string();
             let class_name = donor.export_class_name(exp);
             (name, exp.outer_index, class_pkg, class_name)
         } else {

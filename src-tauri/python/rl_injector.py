@@ -33,22 +33,18 @@ def inject_dll(process_name, dll_path):
     dll_path_bytes = dll_path.encode('utf-8')
     dll_len = len(dll_path_bytes) + 1
 
-    # Win32 API Definitions
     kernel32 = ctypes.windll.kernel32
-    
     PROCESS_ALL_ACCESS = (0x000F0000 | 0x00100000 | 0xFFF)
     MEM_COMMIT = 0x1000
     MEM_RESERVE = 0x2000
     PAGE_READWRITE = 0x04
 
-    # 1. Open the target process
     print("[*] Opening target process...")
     h_process = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
     if not h_process:
         print(f"[!] Failed to acquire handle to PID {pid}")
         sys.exit(1)
 
-    # 2. Allocate memory in the target process for the DLL path
     print("[*] Allocating memory in target process...")
     arg_address = kernel32.VirtualAllocEx(h_process, 0, dll_len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
     if not arg_address:
@@ -56,30 +52,25 @@ def inject_dll(process_name, dll_path):
         kernel32.CloseHandle(h_process)
         sys.exit(1)
 
-    # 3. Write the DLL path into the allocated memory
     print("[*] Writing DLL path into target memory...")
     written = ctypes.c_int(0)
     kernel32.WriteProcessMemory(h_process, arg_address, dll_path_bytes, dll_len, ctypes.byref(written))
 
-    # 4. Get the address of LoadLibraryA in kernel32.dll
     print("[*] Resolving LoadLibraryA...")
     h_kernel32 = kernel32.GetModuleHandleA(b"kernel32.dll")
     h_loadlib = kernel32.GetProcAddress(h_kernel32, b"LoadLibraryA")
 
-    # 5. Create a remote thread that calls LoadLibraryA with our DLL path
     print("[*] Spawning remote thread to execute payload...")
     thread_id = ctypes.c_ulong(0)
     h_thread = kernel32.CreateRemoteThread(h_process, None, 0, h_loadlib, arg_address, 0, ctypes.byref(thread_id))
-    
     if not h_thread:
         print("[!] Failed to create remote thread.")
-        kernel32.VirtualFreeEx(h_process, arg_address, 0, 0x8000) # MEM_RELEASE
+        kernel32.VirtualFreeEx(h_process, arg_address, 0, 0x8000)
         kernel32.CloseHandle(h_process)
         sys.exit(1)
 
     print(f"[+] Injection successful! Thread ID: {thread_id.value}")
 
-    # Clean up handles
     kernel32.CloseHandle(h_thread)
     kernel32.CloseHandle(h_process)
 
@@ -96,11 +87,7 @@ if __name__ == "__main__":
     parser.add_argument("--target", required=True, help="Original item name (e.g., Flamethrower)")
     parser.add_argument("--replace", required=True, help="Replacement item name (e.g., AlphaReward)")
     parser.add_argument("--dll", default=os.path.join(os.path.dirname(__file__), "..", "src", "hook_payload", "Payload.dll"), help="Path to payload DLL")
-    
     args = parser.parse_args()
-    
     generate_config(args.target, args.replace)
-    
     print("[*] Preparing to inject...")
     inject_dll("RocketLeague.exe", os.path.abspath(args.dll))
-

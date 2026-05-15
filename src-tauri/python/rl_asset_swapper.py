@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 import argparse
 import base64
 import importlib
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-# Dummy imports for PyInstaller to include dependencies of dynamically loaded rl_upk_editor
+
 if False:
     import concurrent.futures
     import ctypes
@@ -101,7 +101,6 @@ def default_path(names: Sequence[str]) -> Path:
         ]
         if getattr(sys, "_MEIPASS", None):
             candidates.insert(0, Path(sys._MEIPASS) / name)
-            
         for candidate in candidates:
             if candidate.exists():
                 return candidate
@@ -117,7 +116,6 @@ def import_rl_upk_editor():
     here = script_dir()
     names = ["rl_upk_editor.py", "rl_upk_editor(1).py"]
     candidates = []
-    
     for name in names:
         candidates.extend([
             here / name,
@@ -193,7 +191,6 @@ def find_item(items: Sequence[Item], value: str, slot: str = "") -> Item:
     if not matches:
         raise ValueError(f"No item matched {value!r}" + (f" in slot {slot!r}" if slot else ""))
     if len(matches) > 1:
-        # 1. Try exact matches on product name or package (handle .upk suffix)
         exact = []
         for x in matches:
             p_low = x.product.lower()
@@ -201,11 +198,8 @@ def find_item(items: Sequence[Item], value: str, slot: str = "") -> Item:
             val_low = value.lower()
             if p_low == val_low or pkg_low == val_low or pkg_low.removesuffix(".upk") == val_low:
                 exact.append(x)
-        
         if len(exact) == 1:
             return exact[0]
-            
-        # 2. If still ambiguous, check if they are all functionally identical (same package & path)
         unique_assets = {(x.asset_package.lower(), x.asset_path.lower()) for x in (exact if exact else matches)}
         if len(unique_assets) == 1:
             return (exact if exact else matches)[0]
@@ -369,11 +363,9 @@ def apply_name_pairs(upk, package, pairs: Sequence[Tuple[str, str]], preserve_he
         if case_match:
             log.append(f"CASE: matched {old!r} case-insensitively")
 
-        # FIX: Instead of only patching header refs (which causes a Header/Body desync crash),
-        # we free up the target name if it already exists in the file's dictionary.
         colliding_indices, _ = find_name_indices(current, new)
         for c_idx in colliding_indices:
-            dummy_name = f"FREEDNAME{c_idx}" # No underscores, engine treats as pure base name
+            dummy_name = f"FREEDNAME{c_idx}"
             if preserve_header_offsets:
                 fixed, pad = fixed_rename_name_entry(upk, current, c_idx, dummy_name)
                 if fixed is not None:
@@ -386,7 +378,6 @@ def apply_name_pairs(upk, package, pairs: Sequence[Tuple[str, str]], preserve_he
             except Exception as e:
                 log.append(f"WARN: Could not free colliding name: {e}")
 
-        # Now force the physical text replacement so body and header stay perfectly synced
         for idx in indices:
             old_actual = clean_name(current.names[idx].name)
             if preserve_header_offsets:
@@ -400,7 +391,6 @@ def apply_name_pairs(upk, package, pairs: Sequence[Tuple[str, str]], preserve_he
                 log.append(f"RENAMED: name[{idx}] {old_actual!r} -> {new!r}; header offsets may change.")
             except Exception as e:
                 log.append(f"ERROR: could not rename {old_actual!r}: {e}")
-                
     return current, log
 
 
@@ -705,18 +695,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def interactive_run(args: argparse.Namespace) -> int:
     print("\n=== VelocityRL Interactive CLI ===")
-    
     if not args.donor_dir:
         val = input("Path to CookedPCConsole: ").strip().strip('"')
         if not val: raise SystemExit("Aborted")
         args.donor_dir = Path(val)
-        
     if not args.output_dir:
         val = input("Path to Output Folder (Press Enter to use CookedPCConsole): ").strip().strip('"')
         args.output_dir = Path(val) if val else args.donor_dir
 
     items = load_items(args.items)
-    
     if not args.slot:
         slots = sorted({i.slot for i in items if i.slot})
         print("\nAvailable Slots:")
@@ -757,16 +744,13 @@ def interactive_run(args: argparse.Namespace) -> int:
         if not donor_item: raise SystemExit("Aborted")
         args.donor = donor_item.id
 
-    # Now that we have the args, run the normal logic
     return cli_run(args)
 
 
 def cli_run(args: argparse.Namespace) -> int:
-    # If any required args are missing, try interactive mode if we're in a TTY
     if not args.donor_dir or not args.output_dir or (not args.revert and (not args.target or not args.donor)):
         if sys.stdin.isatty():
             return interactive_run(args)
-        
     if not args.donor_dir or not args.output_dir:
         raise SystemExit("--donor-dir and --output-dir are required")
     if args.revert and not args.target:
@@ -816,7 +800,6 @@ def fetch_catalog(args: argparse.Namespace) -> int:
     if not args.token:
         print("Error: --token is required for --fetch")
         return 1
-        
     REQUEST_KEY = bytes.fromhex("c338bd36fb8c42b1a431d30add939fc7")
     PSYNET_RPC_URL = "https://api.rlpp.psynet.gg/rpc/"
 
@@ -834,10 +817,8 @@ def fetch_catalog(args: argparse.Namespace) -> int:
         }
         if psy_token: headers["PsyToken"] = psy_token
         if session_id: headers["PsySessionID"] = session_id
-        
         json_body = json.dumps(body)
         headers["PsySig"] = get_psysig(json_body, REQUEST_KEY)
-        
         import requests
         resp = requests.post(PSYNET_RPC_URL, headers=headers, data=json_body)
         if resp.status_code != 200:
@@ -865,15 +846,10 @@ def fetch_catalog(args: argparse.Namespace) -> int:
 
         catalog_body = {
             "PlayerID": player_id,
-            "Category": "StarterPack" # Default category
+            "Category": "StarterPack"
         }
         catalog = call_rpc("Microtransaction/GetCatalog v1", catalog_body, psy_token, session_id)
-        
-        # In a real tool, we'd do more, but for now we output the catalog
-        # The user's goal is to see it's working
         print(json.dumps(catalog, indent=4))
-        
-        # Also try to fetch shop
         shop_res = call_rpc("Shops/GetStandardShops v1", {}, psy_token, session_id)
         print("\n=== Available Shops ===")
         print(json.dumps(shop_res, indent=4))
@@ -887,7 +863,6 @@ def fetch_catalog(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
-    
     if args.fetch:
         return fetch_catalog(args)
 

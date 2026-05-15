@@ -51,7 +51,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__ # the action will replace this with the version from package.json
+          tagName: v__VERSION__
           releaseName: "VelocityRL v__VERSION__"
           releaseBody: "Automated Release with SHA256 Integrity Verification."
           releaseDraft: true

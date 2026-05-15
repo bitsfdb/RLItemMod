@@ -36,15 +36,14 @@ impl EpicAuth {
 
     pub async fn exchange_code(&self, code: &str) -> Result<serde_json::Value, String> {
         let client = reqwest::Client::new();
-        let body = [
-            ("grant_type", "exchange_code"),
-            ("exchange_code", code),
-            ("client_id", &self.client_id),
-            ("token_type", "eg1"),
-        ];
+        let form_body = format!(
+            "grant_type=exchange_code&exchange_code={}&client_id={}&token_type=eg1",
+            code, &self.client_id
+        );
 
         let resp = client.post("https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token")
-            .form(&body)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form_body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -53,7 +52,7 @@ impl EpicAuth {
             return Err(format!("Epic Auth failed: {} - {}", resp.status(), resp.text().await.unwrap_or_default()));
         }
 
-        resp.json().await.map_err(|e| e.to_string())
+        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
     }
 }
 
@@ -162,6 +161,9 @@ impl PsynetClient {
                 Err(e) => println!("Warning: Failed to fetch category {}: {}", cat, e),
             }
         }
+        Ok(all_products)
+    }
+
     pub async fn get_player_products(&self, updated_timestamp: i64) -> Result<Vec<serde_json::Value>, String> {
         let player_id = self.player_id.as_ref().ok_or("Not logged in")?;
         let body = serde_json::json!({

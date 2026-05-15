@@ -26,7 +26,7 @@ body {
     user-select: none;
 }
 
-/* Custom Scrollbar */
+
 ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -45,7 +45,7 @@ body {
     background: #3f3f46;
 }
 
-/* For Firefox */
+
 * {
     scrollbar-width: thin;
     scrollbar-color: #27272a transparent;
@@ -547,7 +547,7 @@ input:focus {
     border-color: var(--accent-blue);
 }
 
-/* Toast System */
+
 #toast-container {
     position: fixed;
     top: 24px;
@@ -604,4 +604,3 @@ input:focus {
     from { opacity: 1; transform: translateX(0); }
     to { opacity: 0; transform: translateX(100%); }
 }
-

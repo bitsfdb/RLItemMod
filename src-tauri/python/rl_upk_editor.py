@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 import argparse
 import base64
 import concurrent.futures
@@ -101,7 +101,6 @@ class BinaryReader:
             return raw[:-2].decode("utf-16-le", errors="ignore")
         raw = self.read_exact(length - 1)
         self.read_exact(1)
-        # UE3 positive length strings are ANSI/Windows-1252, not UTF-8
         return raw.decode("windows-1252", errors="ignore")
 
 
@@ -256,13 +255,6 @@ class ParsedPackage:
         return self.resolve_name(target.object_name)
 
     def is_placeholder_export(self, export: ExportEntry) -> bool:
-        # An export is a placeholder/garbage slot if its class is the meta
-        # 'Class' (class_index == 0), its name resolves to literal 'None'
-        # (name table index 0 in UE3), it has no outer, no serial body, and
-        # no flags set. UE Explorer filters these out of its class list using
-        # essentially the same predicate (ClassIndex == 0 && Name == 'None').
-        # We additionally require zero size/offset/flags to avoid false
-        # positives on rare native objects whose class index is 0.
         if export.class_index != 0:
             return False
         name = self.resolve_name(export.object_name)
@@ -779,9 +771,6 @@ def find_key_for_encrypted_upk(encrypted_path: Path, provider: DecryptionProvide
 
 def build_reencrypted_package(original_encrypted_path: Path, modified_decrypted_bytes: bytes, provider: DecryptionProvider, output_path: Path, *, override_key: Optional[bytes] = None) -> Path:
     summary, meta, original_encrypted_data, valid_key = find_valid_key(original_encrypted_path, provider)
-    # If the caller wants to encrypt with a different key (e.g. sourced from a
-    # donor encrypted UPK), use that key for the output instead of the key that
-    # was used to decrypt the original package.
     if override_key is not None:
         valid_key = override_key
     modified_summary = parse_file_summary(io.BytesIO(modified_decrypted_bytes))
@@ -880,10 +869,6 @@ def build_reencrypted_package(original_encrypted_path: Path, modified_decrypted_
 
 def _pack_fname_value(package: ParsedPackage, text: str) -> bytes:
     text = text.strip()
-    # Allow either "#<index>" to pick a name table entry by raw index, or a
-    # plain base/base_<N> string to match by name. Instance suffixes are
-    # split off so users can write things like "Foo_3" and have it round-trip
-    # through the version-aware serialize_fname adjustment.
     base_text, instance_number = _split_name_instance(text)
     match = None
     if base_text.startswith("#"):
@@ -899,8 +884,6 @@ def _pack_fname_value(package: ParsedPackage, text: str) -> bytes:
                 match = entry
                 break
     if match is None:
-        # Fall back to the original full string (for the legacy case where a
-        # name literally contained '_<digits>').
         for entry in package.names:
             if entry.name == text:
                 match = entry
@@ -908,9 +891,6 @@ def _pack_fname_value(package: ParsedPackage, text: str) -> bytes:
                 break
     if match is None:
         raise ValueError(f"FName not found in package name table: {text}")
-    # instance_number == 0 from _split_name_instance means "no suffix typed",
-    # which corresponds to in-memory -1 for >= NUMBER_ADDED_TO_NAME packages
-    # (so serialize_fname writes 0 on disk). Translate appropriately.
     if package.summary.file_version >= NUMBER_ADDED_TO_NAME and instance_number == 0:
         in_memory_instance = -1
     else:
@@ -1067,21 +1047,14 @@ def write_fstring_bytes(text: str) -> bytes:
     if not text:
         return struct.pack('<i', 0)
     try:
-        # If it's pure ASCII, serialize as 1-byte ANSI (positive length)
         encoded = text.encode('ascii') + b'\x00'
         return struct.pack('<i', len(encoded)) + encoded
     except UnicodeEncodeError:
-        # If it contains non-ASCII characters, serialize as 2-byte UTF-16LE (negative length)
         encoded = text.encode('utf-16-le') + b'\x00\x00'
         char_count = len(text) + 1
         return struct.pack('<i', -char_count) + encoded
 
 def serialize_fname(ref: FNameRef, summary: Optional["FileSummary"] = None) -> bytes:
-    # Mirror the version-aware adjustment in read_fname: for >= NUMBER_ADDED_TO_NAME
-    # the on-disk stored value is (instance_number + 1), so we add 1 here.
-    # When summary is None (legacy callers), fall back to writing the raw
-    # in-memory value, which preserves prior behaviour for any code path
-    # that hasn't been threaded through.
     if summary is not None and summary.file_version >= NUMBER_ADDED_TO_NAME:
         stored_instance = ref.instance_number + 1
     else:
@@ -1245,17 +1218,6 @@ def _replace_header_tables(package: ParsedPackage, names: List[NameEntry], impor
     if "thumbnail_table_offset_offset" in offsets:
         patch_i32_le(header_blob, offsets["thumbnail_table_offset_offset"], thumbnail_table_offset)
 
-    # NOTE: total_header_size is intentionally written back UNCHANGED. In a
-    # decrypted RL package this field carries over the value from the original
-    # encrypted file (unpack_package copies the encrypted prefix verbatim into
-    # the decrypted output and never adjusts this field). The encrypted-save
-    # path (build_reencrypted_package) computes its own correct value from
-    # name_offset + encrypted_plain_len + garbage_size and patches it
-    # independently, so the value we write here only matters for
-    # 'Save Decrypted UPK' where preserving the original-encrypted semantics
-    # is the right behaviour. An earlier attempt to "fix" this by adding the
-    # names+imports growth delta produced corrupt encrypted files because the
-    # delta concept doesn't apply to the encrypted-layout meaning of this field.
     patch_i32_le(header_blob, offsets["total_header_size_offset"], summary.total_header_size)
     _patch_generation_counts(header_blob, offsets, len(patched_exports), len(names))
 
@@ -1348,9 +1310,6 @@ def _derive_donor_package_name(donor_package: ParsedPackage, override: Optional[
     if override and override.strip():
         return override.strip()
     stem = donor_package.file_path.stem
-    # Strip our own '_decrypted' / '_decompressed' suffixes that resolve_input_package
-    # appends when it produces a working copy - the file the game loads has the
-    # original stem.
     for suffix in ("_decrypted", "_decompressed"):
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
@@ -1364,13 +1323,6 @@ def _derive_donor_package_name(donor_package: ParsedPackage, override: Optional[
 
 
 def merge_donor_exports_as_imports(target_package: ParsedPackage, donor_package: ParsedPackage, donor_package_name: Optional[str] = None) -> ParsedPackage:
-    # The donor's package name is what the engine will look up at runtime to
-    # locate and LoadPackage the donor .upk. Every donor export we re-import
-    # MUST be rooted under a Core.Package import with this name, otherwise
-    # the engine has no way to know which file to open to resolve the
-    # reference. Previously donor root exports were imported with
-    # outer_index=0 (i.e. as if they themselves were top-level packages),
-    # which left the engine unable to resolve them.
     resolved_donor_name = _derive_donor_package_name(donor_package, donor_package_name)
 
     names = [NameEntry(index=n.index, name=n.name, flags=n.flags) for n in target_package.names]
@@ -1390,11 +1342,6 @@ def merge_donor_exports_as_imports(target_package: ParsedPackage, donor_package:
         existing_paths[package_name] = idx
         return idx
 
-    # Pre-create the donor package import up front. Even if no donor exports
-    # ended up needing it (e.g. all collisions with existing imports), having
-    # this entry guarantees the engine will attempt to load the donor file
-    # when the target is loaded, which is what users typically want when
-    # they "import donor exports".
     donor_root_index = ensure_package_root(resolved_donor_name)
 
     def ensure_donor_object(index: int) -> int:
@@ -1403,12 +1350,6 @@ def merge_donor_exports_as_imports(target_package: ParsedPackage, donor_package:
         if index in donor_cache:
             return donor_cache[index]
         path = donor_package.resolve_object_path(index)
-        # When matching against existing target imports, prepend the donor
-        # package name so a donor export "Foo" doesn't collide with an
-        # unrelated existing import literally named "Foo". For donor
-        # imports we keep the original path because those refer to the same
-        # external packages (Engine, Core, etc.) the target may also
-        # reference, and we WANT to share those.
         scoped_path = f"{resolved_donor_name}.{path}" if index > 0 else path
         if scoped_path in existing_paths:
             donor_cache[index] = existing_paths[scoped_path]
@@ -1418,8 +1359,6 @@ def merge_donor_exports_as_imports(target_package: ParsedPackage, donor_package:
             obj_name = donor_package.resolve_name(obj.object_name)
             outer_index = ensure_donor_object(obj.outer_index) if obj.outer_index else 0
             if outer_index == 0:
-                # Root donor export: parent it to the donor package import so
-                # the engine knows to LoadPackage(donor_name) to resolve it.
                 outer_index = donor_root_index
             class_pkg_name, class_name_name = _class_package_and_name_for_ref(donor_package, obj.class_index)
         else:
@@ -1519,26 +1458,16 @@ def rename_export_fname(package: ParsedPackage, export: ExportEntry, new_name_te
     if instance < 0:
         raise ValueError("Instance number must be >= 0")
 
-    # Locate where this export's entry sits inside the export table so we can
-    # patch the 8-byte object_name field in place. Layout of an export entry:
-    #   class_index (i32) | super_index (i32) | outer_index (i32) |
-    #   object_name (i32 name_index + i32 instance_number) | ...
-    # so object_name starts at entry_offset + 12.
     export_entry_offsets = get_export_entry_offsets(package)
     if export.table_index < 0 or export.table_index >= len(export_entry_offsets):
         raise ValueError("Export table index out of range")
     fname_field_abs = export_entry_offsets[export.table_index] + 12
 
-    # The user-typed instance number is the "displayed" value (0 for no
-    # suffix, 3 for _3, etc.). On disk for >= NUMBER_ADDED_TO_NAME the
-    # stored value is (instance + 1), so we add 1 here. For older versions
-    # the stored value equals the displayed value.
     if package.summary.file_version >= NUMBER_ADDED_TO_NAME:
         stored_instance = instance + 1 if instance > 0 else 0
     else:
         stored_instance = instance
 
-    # Try to reuse an existing name first.
     existing_idx: Optional[int] = None
     for entry in package.names:
         if entry.name == base:
@@ -1546,7 +1475,6 @@ def rename_export_fname(package: ParsedPackage, export: ExportEntry, new_name_te
             break
 
     if existing_idx is not None:
-        # Fast path: in-place 8-byte patch of the export entry's FName field.
         new_data = bytearray(package.file_bytes)
         new_data[fname_field_abs:fname_field_abs + 8] = struct.pack("<ii", existing_idx, stored_instance)
         result = parse_decrypted_package_bytes(package.file_path, bytes(new_data))
@@ -1555,20 +1483,12 @@ def rename_export_fname(package: ParsedPackage, export: ExportEntry, new_name_te
         setattr(result, '_rename_export_index', export.table_index)
         return result
 
-    # Slow path: append a new name entry and rebuild the header tables. The
-    # rebuild may shift the depends_offset and any export serial_offsets that
-    # come after it, but the entries inside the export table itself stay at the
-    # same relative positions because _replace_header_tables preserves their
-    # order. So entry_offsets of the rebuilt file equal new_export_offset +
-    # (old_offset - old_export_offset).
     names = [NameEntry(index=n.index, name=n.name, flags=n.flags) for n in package.names]
     new_entry_index = len(names)
     names.append(NameEntry(index=new_entry_index, name=base, flags=0))
 
     rebuilt_bytes = bytearray(_replace_header_tables(package, names, package.imports))
 
-    # Recompute export entry offsets in the rebuilt file (their positions can
-    # shift because the names table grew) and patch the FName field.
     rebuilt_pkg = parse_decrypted_package_bytes(package.file_path, bytes(rebuilt_bytes))
     new_offsets = get_export_entry_offsets(rebuilt_pkg)
     if export.table_index >= len(new_offsets):
@@ -1627,9 +1547,6 @@ def rename_name_entry(package: ParsedPackage, name_index: int, new_text: str) ->
     if name_index < 0 or name_index >= len(package.names):
         raise ValueError(f"Name index {name_index} out of range (0..{len(package.names) - 1})")
 
-    # Reject instance suffixes - those belong on FNameRefs, not entries. A
-    # name table entry is a pure base string; entries like "Foo_3" only happen
-    # if the original asset really had a literal underscore-digit base name.
     base, instance = _split_name_instance(new_text)
     if instance != 0:
         raise ValueError(
@@ -1640,8 +1557,6 @@ def rename_name_entry(package: ParsedPackage, name_index: int, new_text: str) ->
 
     old_entry = package.names[name_index]
     if old_entry.name == new_text:
-        # No-op: re-parse so callers always get a fresh ParsedPackage with the
-        # standard rename metadata attached.
         result = parse_decrypted_package_bytes(package.file_path, bytes(package.file_bytes))
         setattr(result, '_name_rename_index', name_index)
         setattr(result, '_name_rename_old', old_entry.name)
@@ -1649,9 +1564,6 @@ def rename_name_entry(package: ParsedPackage, name_index: int, new_text: str) ->
         setattr(result, '_name_size_delta', 0)
         return result
 
-    # Reject collisions with other entries. Merging duplicates would require
-    # remapping every FNameRef across exports/imports/serialized properties to
-    # the surviving index, which is a much larger operation than a rename.
     for entry in package.names:
         if entry.index == name_index:
             continue
@@ -1662,9 +1574,6 @@ def rename_name_entry(package: ParsedPackage, name_index: int, new_text: str) ->
                 "name, or rename the other entry first."
             )
 
-    # Build the modified names list and let _replace_header_tables redo the
-    # names blob, recompute downstream offsets, and shift export serial_offsets
-    # by the size delta.
     old_blob_len = len(serialize_name_entry(old_entry))
     new_entry = NameEntry(index=name_index, name=new_text, flags=old_entry.flags)
     new_blob_len = len(serialize_name_entry(new_entry))
@@ -1703,24 +1612,24 @@ def resolve_object_index_by_text(package: ParsedPackage, text: str) -> Optional[
     return None
 
 
-# ── DLLBind support ──────────────────────────────────────────────────────────
-#
-# In UE3 the compiler keyword `DLLBind(SomeDLL)` on a class declaration
-# stores the DLL name as an FString field called DLLBindName inside the
-# UClass serial body.  It is the LAST field serialized by UClass::Serialize,
-# immediately after NativeClassName (also an FString).
-#
-# When the engine loads the package it reads this field and calls
-# LoadLibrary on the named DLL before the class is fully initialised,
-# making DLLBind a clean DLL-injection point for Rocket League mods.
-#
-# Binary layout at the tail of a cooked UClass serial body:
-#   [... UClass-specific fields ...]
-#   NativeClassName  : FString  (usually empty → 4 zero bytes)
-#   DLLBindName      : FString  (empty = 4 zero bytes; or len+chars+NUL)
-#
-# FString encoding:  int32 length (including NUL) then ASCII bytes + NUL.
-#                    Length == 0 means empty string (no NUL follows).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def is_uclass_export(package: ParsedPackage, export: ExportEntry) -> bool:
     """Return True when *export* is itself a class definition (class_index → Class)."""
@@ -1744,16 +1653,8 @@ def find_uclass_dllbind_fstring_offset(raw: bytes) -> Optional[Tuple[int, str]]:
     if L < 4:
         return None
 
-    # Determine the search window.  DLLBind names are short (<260 chars),
-    # so DLLBindName is at most 4+260 = 264 bytes.  We walk backwards.
     lo = max(0, L - 264 - 4)
 
-    # Try every possible starting offset for an FString that ends at L.
-    #   fstring_start = pos
-    #   length field  = int32 at pos              (4 bytes)
-    #   string data   = raw[pos+4 : pos+4+length] (length bytes)
-    #   total size    = 4 + length
-    #   must satisfy  = pos + 4 + length == L
     for pos in range(L - 4, lo - 1, -1):
         if pos < 0:
             break
@@ -1763,24 +1664,19 @@ def find_uclass_dllbind_fstring_offset(raw: bytes) -> Optional[Tuple[int, str]]:
             break
 
         if length == 0:
-            # Empty FString: occupies exactly 4 bytes.
             if pos + 4 == L:
                 return pos, ""
-            # Keep scanning — this zero might be padding before the real field.
             continue
 
         if length < 0 or length > 260:
-            # Negative → UTF-16 (unusual for DLL names); too large → noise.
             continue
 
-        # Non-empty ASCII FString: must end exactly at L.
         if pos + 4 + length != L:
             continue
 
         str_bytes = raw[pos + 4: L]
         if len(str_bytes) != length:
             continue
-        # Null-terminated ASCII.
         if str_bytes[-1] != 0:
             continue
         try:
@@ -1824,7 +1720,6 @@ def set_uclass_dllbind_name(package: ParsedPackage, export: ExportEntry, dll_nam
 
     fstring_offset, current_dll_name = result
 
-    # Build old and new FString byte representations.
     def encode_fstring(name: str) -> bytes:
         if not name:
             return struct.pack("<i", 0)
@@ -1835,11 +1730,10 @@ def set_uclass_dllbind_name(package: ParsedPackage, export: ExportEntry, dll_nam
     new_fstring = encode_fstring(dll_name)
 
     if old_fstring == new_fstring:
-        return bytes(package.file_bytes)  # nothing to do
+        return bytes(package.file_bytes)
 
     size_delta = len(new_fstring) - len(old_fstring)
 
-    # Absolute byte range of the old FString inside the package file.
     abs_start = export.serial_offset + fstring_offset
     abs_end   = abs_start + len(old_fstring)
 
@@ -1853,11 +1747,9 @@ def set_uclass_dllbind_name(package: ParsedPackage, export: ExportEntry, dll_nam
         if export.table_index >= len(export_entry_offsets):
             raise ValueError("Export table index out of range.")
 
-        # Patch this export's serial_size (at entry_offset + 32).
         entry_offset = export_entry_offsets[export.table_index]
         patch_i32_le(new_data, entry_offset + 32, export.serial_size + size_delta)
 
-        # Shift all exports whose bodies come after this one (at entry_offset + 36).
         for idx, other in enumerate(package.exports):
             if idx == export.table_index:
                 continue
@@ -1981,16 +1873,6 @@ def read_fname_pkg(reader: BinaryReader, package: ParsedPackage) -> FNameRef:
 
 
 def read_fname(reader: BinaryReader, summary: Optional["FileSummary"] = None) -> FNameRef:
-    # When called with a FileSummary, applies the same UE3 instance-number
-    # convention as read_fname_pkg: the value stored on disk is (number + 1),
-    # so we subtract 1 to recover the in-memory number where -1 means "no
-    # suffix" and 0/1/2/... are real instance suffixes. UE Explorer's
-    # ReadName/ReadNameReference does the same thing
-    # (see UELib/src/UnrealStream.cs ReadName, line ~509-516). When called
-    # without a summary we keep the legacy raw read for any caller that
-    # genuinely wants two i32s with no adjustment - currently nothing in the
-    # codebase relies on that, but the default keeps the signature backwards
-    # compatible if external callers exist.
     name_index = reader.read_i32()
     raw_instance = reader.read_i32()
     if summary is not None and summary.file_version >= NUMBER_ADDED_TO_NAME:
@@ -2217,21 +2099,6 @@ def parse_import_entry(reader: BinaryReader, table_index: int, summary: "FileSum
 
 
 def parse_export_entry(reader: BinaryReader, table_index: int, generation_count: int, summary: "FileSummary") -> ExportEntry:
-    # The export entry layout in this UE3 build is:
-    #   class_index (i32) | super_index (i32) | outer_index (i32) |
-    #   object_name (FName: i32 name_index + i32 instance_number) |
-    #   archetype_index (i32) | object_flags (u64) |
-    #   serial_size (i32) | serial_offset (i64) | export_flags (i32) |
-    #   net_objects (TArray<i32>: i32 count + count * i32) |
-    #   package_guid (4*u32) | package_flags (i32)
-    #
-    # net_objects IS length-prefixed in this package version - it was the
-    # generation_count assumption that was wrong. The original "None / Class
-    # / 0 / 0" tail in the GUI is most likely an artifact of the export count
-    # in the summary being larger than the number of real entries on disk
-    # (the table is followed by zero padding), not a parser desync. The
-    # generation_count parameter is kept for signature stability with
-    # callers, but is not used.
     del generation_count
     class_index = reader.read_i32()
     super_index = reader.read_i32()
@@ -2310,7 +2177,6 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
     s = package.summary
     file_len = len(package.file_bytes)
 
-    # Summary-level offset sanity.
     if s.name_offset <= 0 or s.name_offset >= file_len:
         findings.append(("ERROR", f"name_offset {s.name_offset} is out of bounds (file size {file_len})"))
     if s.import_offset <= 0 or s.import_offset >= file_len:
@@ -2320,7 +2186,6 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
     if s.depends_offset <= 0 or s.depends_offset > file_len:
         findings.append(("ERROR", f"depends_offset {s.depends_offset} is out of bounds"))
 
-    # Tables must be in the canonical order: names < imports < exports < depends.
     if not (s.name_offset < s.import_offset < s.export_offset < s.depends_offset):
         findings.append((
             "ERROR",
@@ -2330,10 +2195,6 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
     else:
         findings.append(("OK", "Header tables are in canonical order"))
 
-    # total_header_size sanity. For plain (decompressed) packages this should
-    # equal depends_offset + (size of depends table). We can't compute the
-    # depends table size without re-parsing it, but we can at least require
-    # total_header_size >= depends_offset.
     if s.total_header_size < s.depends_offset:
         findings.append((
             "ERROR",
@@ -2343,10 +2204,6 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
     else:
         findings.append(("OK", f"total_header_size {s.total_header_size} >= depends_offset {s.depends_offset}"))
 
-    # Re-parse the export table from disk and verify the cursor lands at
-    # depends_offset. If it doesn't, the export entries on disk don't match
-    # what our parser thinks they look like, which would also confuse the
-    # engine.
     try:
         bio = io.BytesIO(package.file_bytes)
         bio.seek(s.export_offset)
@@ -2365,9 +2222,6 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
     except Exception as exc:
         findings.append(("ERROR", f"Export table re-parse failed: {exc}"))
 
-    # Per-export bounds. Every export's [serial_offset, serial_offset + serial_size)
-    # must lie inside the file, and must lie at or after total_header_size
-    # (the export bodies live in the data region, not the header region).
     body_violations = 0
     for exp in package.exports:
         if package.is_placeholder_export(exp):
@@ -2377,7 +2231,7 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
             body_violations += 1
             continue
         if exp.serial_size == 0:
-            continue  # Zero-size exports legitimately have offset 0.
+            continue
         if exp.serial_offset < s.total_header_size:
             findings.append((
                 "ERROR",
@@ -2395,8 +2249,6 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
     if body_violations == 0:
         findings.append(("OK", f"All {sum(1 for e in package.exports if not package.is_placeholder_export(e))} non-placeholder export bodies are in-bounds"))
 
-    # Detect overlapping export bodies. Two exports' [start, end) ranges
-    # should not overlap.
     bodies = sorted(
         ((exp.serial_offset, exp.serial_offset + exp.serial_size, exp.table_index, package.resolve_name(exp.object_name))
          for exp in package.exports
@@ -2415,8 +2267,6 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
     if overlap_count == 0 and bodies:
         findings.append(("OK", f"No overlapping export bodies among {len(bodies)} non-placeholder exports"))
 
-    # Cross-reference checks. Every export.class_index, super_index,
-    # outer_index, archetype_index must be a valid export or import index.
     def _index_label(idx: int) -> str:
         if idx == 0:
             return "None"
@@ -2447,10 +2297,6 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
                     ))
                     bad_refs += 1
     for imp in package.imports:
-        # Imports' outer_index can be 0 (top-level) or another import (negative)
-        # or an export (positive). All three are legal in UE3 - imports
-        # parented to exports happen for sub-objects of exports referenced
-        # from outside.
         if imp.outer_index == 0:
             continue
         if imp.outer_index > 0:
@@ -2472,8 +2318,6 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
     if bad_refs == 0:
         findings.append(("OK", "All export/import cross-references resolve"))
 
-    # Name index validity. Every FNameRef in every import/export must have
-    # a name_index inside the names table.
     bad_names = 0
     name_count = len(package.names)
     for imp in package.imports:
@@ -2494,16 +2338,12 @@ def verify_package(package: ParsedPackage) -> List[Tuple[str, str]]:
     if bad_names == 0:
         findings.append(("OK", f"All FName references point inside the {name_count}-entry name table"))
 
-    # Detect orphan exports: any non-placeholder export whose outer_index
-    # cannot be reached from a root (outer_index == 0). Exports that descend
-    # into invalid outers are loadable in isolation but the engine may
-    # behave oddly when iterating the package tree.
     orphans = 0
     visited: Dict[int, bool] = {}
 
     def _has_root(idx: int, depth: int = 0) -> bool:
         if depth > len(package.exports) + len(package.imports) + 2:
-            return False  # cycle
+            return False
         if idx == 0:
             return True
         if idx in visited:
@@ -2538,7 +2378,6 @@ def format_verify_report(findings: List[Tuple[str, str]]) -> str:
     ok_count = sum(1 for sev, _ in findings if sev == "OK")
     header = f"Package verification: {error_count} error(s), {warn_count} warning(s), {ok_count} check(s) passed"
     lines = [header, "=" * len(header), ""]
-    # Errors first, then warnings, then OK.
     for severity in ("ERROR", "WARN", "OK"):
         for sev, msg in findings:
             if sev == severity:
@@ -2625,9 +2464,9 @@ class App:
         self.current_encrypted_input_path: Optional[Path] = None
         self.current_keys_path: Optional[Path] = None
         self.current_original_sha1: Optional[str] = None
-        self.donor_key_upk_path: Optional[Path] = None  # path to donor encrypted UPK for key sourcing
-        self.use_donor_key_var: Optional[tk.BooleanVar] = None  # set during _build_ui
-        self.donor_key_path_var: Optional[tk.StringVar] = None  # display label, set during _build_ui
+        self.donor_key_upk_path: Optional[Path] = None
+        self.use_donor_key_var: Optional[tk.BooleanVar] = None
+        self.donor_key_path_var: Optional[tk.StringVar] = None
         self.status_var = tk.StringVar(value="Ready")
         self.original_var = tk.StringVar(value="Original: -")
         self.sha1_var = tk.StringVar(value="SHA-1: -")
@@ -2695,16 +2534,6 @@ class App:
         left_notebook.add(self.content_tree.master, text="Content")
         self.content_tree.bind("<<TreeviewSelect>>", self._on_content_select)
 
-        # Exports tab: wrap the tree in a frame that also holds a
-        # 'Hide placeholder exports' checkbox. RL .upk files contain export
-        # slots that are entirely zeroed (class=0, name='None', no body) -
-        # these are real on-disk entries, not parser bugs, but they clutter
-        # the table. The checkbox lets the user filter them out, matching
-        # how UE Explorer hides them from its class list. Default is OFF so
-        # nothing changes for existing workflows; flipping it on hides the
-        # placeholders. Same pack-order rule as the Names tab: bottom row
-        # first, tree second, so the tree's expand=True doesn't shove the
-        # row off-screen.
         exports_tab = ttk.Frame(left_notebook)
         left_notebook.add(exports_tab, text="Exports")
 
@@ -2724,9 +2553,6 @@ class App:
         self.exports_tree.heading("#0", text="Index")
         self.exports_tree.master.pack(side="top", fill="both", expand=True)
         self.exports_tree.bind("<<TreeviewSelect>>", self._on_exports_select)
-        # Visual styling for placeholder rows so they're clearly distinct
-        # even when shown. Treeview supports tag_configure for per-row
-        # foreground colors.
         self.exports_tree.tag_configure("placeholder", foreground="#5a6577")
 
         self.imports_tree = self._make_tree(left_notebook, ("name", "class", "package", "outer"), (220, 160, 160, 260))
@@ -2734,23 +2560,9 @@ class App:
         left_notebook.add(self.imports_tree.master, text="Imports")
         self.imports_tree.bind("<<TreeviewSelect>>", self._on_imports_select)
 
-        # Names tab: a wrapper frame holds both the names tree (top, fills
-        # available space) and the inline rename row (bottom, fixed height).
-        # Without the wrapper, the edit row would be inside the tree's own
-        # grid-managed frame and could get clipped by the notebook's height
-        # calculation, so we mimic the Properties-tab layout: pack the tree
-        # frame and the edit row as siblings inside one container that gets
-        # added to the notebook.
-        #
-        # Pack order matters: the bottom edit row is packed FIRST so pack
-        # reserves its space before the tree's expand=True consumes the rest.
-        # If we packed the tree first, it would claim all available height
-        # and the edit row would be pushed below the visible area.
         names_tab = ttk.Frame(left_notebook)
         left_notebook.add(names_tab, text="Names")
 
-        # Edit row pinned to the bottom of the Names tab, outside the tree's
-        # internal grid so the notebook can never hide it. Packed first.
         names_edit = ttk.Frame(names_tab)
         names_edit.pack(side="bottom", fill="x", padx=6, pady=6)
         self.name_edit_info_var = tk.StringVar(value="Select a name to rename")
@@ -2761,19 +2573,13 @@ class App:
         self.name_edit_var = tk.StringVar()
         self.name_edit_entry = ttk.Entry(name_edit_row, textvariable=self.name_edit_var)
         self.name_edit_entry.pack(side="left", fill="x", expand=True, padx=(6, 6))
-        # Pressing Enter in the entry applies the rename.
         self.name_edit_entry.bind("<Return>", lambda _e: self.rename_selected_name())
         ttk.Button(name_edit_row, text="Rename Name", command=self.rename_selected_name).pack(side="left")
 
-        # Now pack the tree on top, filling the remaining space.
         self.names_tree = self._make_tree(names_tab, ("name", "flags"), (380, 220))
         self.names_tree.heading("#0", text="Index")
-        # The tree's own frame (created by _make_tree, exposed as tree.master)
-        # is already grid-managed internally; pack it into the wrapper.
         self.names_tree.master.pack(side="top", fill="both", expand=True)
         self.names_tree.bind("<<TreeviewSelect>>", self._on_names_select)
-        # Double-clicking a row in the names tree focuses the entry so the
-        # user can immediately type a replacement.
         self.names_tree.bind("<Double-1>", self._on_names_double_click)
 
         self.summary_tree = self._make_tree(left_notebook, ("value",), (520,))
@@ -2798,12 +2604,6 @@ class App:
         prop_edit.pack(fill="x", padx=6, pady=6)
         self.property_info_var = tk.StringVar(value="Select a property to edit")
         ttk.Label(prop_edit, textvariable=self.property_info_var).pack(fill="x")
-        # ── Donor-key row ────────────────────────────────────────────────────
-        # When enabled, re-encryption uses the key that decrypts a *different*
-        # encrypted UPK (selected by the user) rather than the key that was
-        # used to decrypt the currently-loaded package.  This lets you take an
-        # edit from one version's package and encrypt it with a key from a
-        # different version without needing to know the key in advance.
         donor_key_row = ttk.Frame(prop_edit)
         donor_key_row.pack(fill="x", pady=(4, 0))
         self.use_donor_key_var = tk.BooleanVar(value=False)
@@ -2818,7 +2618,6 @@ class App:
         ttk.Button(donor_key_row, text="Pick Donor UPK…",
                    command=self._pick_donor_key_upk).pack(side="left")
 
-        # ── Action buttons ───────────────────────────────────────────────────
         edit_row = ttk.Frame(prop_edit)
         edit_row.pack(fill="x", pady=(6, 0))
         ttk.Label(edit_row, text="New Value:").pack(side="left")
@@ -3089,8 +2888,6 @@ class App:
     def _populate_names_tree(self):
         self._clear_tree(self.names_tree)
         self.current_name_map.clear()
-        # Reset the inline rename row so stale text from a previous package or
-        # selection doesn't carry over after a reload.
         if hasattr(self, "name_edit_var"):
             self.name_edit_var.set("")
         if hasattr(self, "name_edit_info_var"):
@@ -3158,7 +2955,6 @@ class App:
             f"NetObjects: {export.net_objects}",
             f"PackageGuid: {export.package_guid[0]:08X}-{export.package_guid[1]:08X}-{export.package_guid[2]:08X}-{export.package_guid[3]:08X}",
         ]
-        # ── DLLBind info (UClass exports only) ──────────────────────────────
         if is_uclass_export(self.package, export):
             dllbind_result = find_uclass_dllbind_fstring_offset(raw)
             if dllbind_result is not None:
@@ -3244,16 +3040,12 @@ class App:
         name = self.current_name_map.get(selection[0])
         if name:
             self._show_name(name)
-            # Pre-fill the rename entry with the current text and update the
-            # info label so the user knows exactly which entry will be edited.
             self.name_edit_var.set(name.name)
             self.name_edit_info_var.set(
                 f"Name[{name.index}]  flags={hex(name.flags)}  ({len(name.name)} chars)"
             )
 
     def _on_names_double_click(self, _event):
-        # Convenience: double-click jumps focus into the rename field with the
-        # current text pre-selected so the user can just start typing.
         if not self.names_tree.selection():
             return
         self.name_edit_entry.focus_set()
@@ -3316,7 +3108,6 @@ class App:
             return
         self.donor_key_upk_path = Path(path)
         self.donor_key_path_var.set(self.donor_key_upk_path.name)
-        # Auto-enable the checkbox when the user picks a file.
         self.use_donor_key_var.set(True)
         self.set_status(f"Donor key UPK set: {self.donor_key_upk_path.name}")
 
@@ -3326,7 +3117,6 @@ class App:
             messagebox.showwarning("UPK GUI", "Load an encrypted package first.")
             return
 
-        # ── Resolve override key from donor UPK if requested ─────────────────
         override_key: Optional[bytes] = None
         if self.use_donor_key_var and self.use_donor_key_var.get():
             donor_path = self.donor_key_upk_path
@@ -3339,7 +3129,6 @@ class App:
                     "the original package's own key.",
                 )
                 return
-            # Build a provider from the same keys.txt so we can try all known keys.
             keys_path = self.current_keys_path
             try:
                 donor_provider = DecryptionProvider(str(keys_path) if keys_path and keys_path.exists() else None)
@@ -3436,9 +3225,6 @@ class App:
         try:
             donor_input = Path(donor_path)
             donor_decrypted, donor_package, _donor_provider, _donor_keys, donor_was_encrypted = resolve_input_package(donor_input, self.decrypted_dir, self.script_dir)
-            # Use the original (encrypted) input filename as the donor package
-            # name, not the decrypted working copy's stem - the game looks up
-            # the file by its deployed name in the cooked content folder.
             donor_pkg_name = donor_input.stem
             merged = merge_donor_exports_as_imports(self.package, donor_package, donor_pkg_name)
             self.package = merged
@@ -3544,7 +3330,6 @@ class App:
                 renamed,
                 self.current_provider,
             )
-            # Re-select the renamed export so the user can immediately see/save it.
             if 0 <= export_index < len(self.package.exports):
                 self.current_export = self.package.exports[export_index]
                 self._show_export(self.current_export)
@@ -3605,9 +3390,6 @@ class App:
                 renamed,
                 self.current_provider,
             )
-            # Re-select the renamed entry. _populate_names_tree rebuilt the
-            # tree from scratch, so the iid is regenerated but uses the same
-            # name:<index> pattern.
             iid = f"name:{target_index}"
             if self.names_tree.exists(iid):
                 self.names_tree.selection_set(iid)
@@ -3698,7 +3480,7 @@ class App:
             parent=self.root,
         )
         if new_dll_name is None:
-            return  # user cancelled
+            return
 
         new_dll_name = new_dll_name.strip()
 
@@ -3744,8 +3526,6 @@ class App:
         if not self.package:
             messagebox.showwarning("UPK GUI", "Load a package first.")
             return
-        # Pick a sensible default location/name. If the original input was a
-        # plain UPK, write next to it; otherwise drop into the decrypted_dir.
         source_path = self.selected_input_path or self.package.file_path
         if self.current_provider is not None:
             initial_dir = str(self.decrypted_dir)
@@ -3798,8 +3578,6 @@ class App:
             messagebox.showerror("UPK GUI", f"Verification failed to run: {exc}")
             return
 
-        # Show the report in a dedicated scrollable dialog so long reports
-        # don't get clipped by messagebox's fixed sizing.
         dlg = tk.Toplevel(self.root)
         dlg.title("Package Verification Report")
         dlg.geometry("980x560")

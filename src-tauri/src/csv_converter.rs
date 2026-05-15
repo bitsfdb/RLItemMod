@@ -15,9 +15,8 @@ pub fn convert_csv_to_json(csv_path: &str) -> Result<Value, String> {
         let id = parts[0].parse::<i32>().unwrap_or(0);
         let slot = parts[1];
         let asset_path = parts[2];
-        let label = parts[3..].join(","); // Handle commas in labels
+        let label = parts[3..].join(",");
 
-        // Simple mapping: Product_TA ProductsDB.Products.Body_Octane -> Body_Octane
         let asset_name = asset_path.split('.').last().unwrap_or(asset_path);
         let package_name = if asset_name.starts_with("Body_") {
             format!("{}_SF", asset_name)

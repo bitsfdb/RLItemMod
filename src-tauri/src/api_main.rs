@@ -27,7 +27,6 @@ struct AppState {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
-    
     let items_val = if std::path::Path::new("../items.csv").exists() {
         csv_converter::convert_csv_to_json("../items.csv").unwrap_or(json!({"Items": []}))
     } else {
@@ -67,7 +66,6 @@ async fn handle_fetch_catalog(
 ) -> Result<Json<Value>, String> {
     use crate::engine::psynet::{EpicAuth, EPIC_LAUNCHER_CLIENT_ID};
 
-    // If the token looks like an exchange code, exchange it for a ticket
     let ticket = if params.token.len() < 64 {
         let epic = EpicAuth::new(EPIC_LAUNCHER_CLIENT_ID);
         let auth = epic.exchange_code(&params.token).await?;
@@ -78,9 +76,7 @@ async fn handle_fetch_catalog(
 
     let mut client = PsynetClient::new(ticket);
     client.login(&params.account).await.map_err(|e| e.to_string())?;
-    
     let products = client.get_all_products().await.map_err(|e| e.to_string())?;
-    
     let mut new_items = Vec::new();
     for p in products {
         new_items.push(json!({
@@ -88,7 +84,7 @@ async fn handle_fetch_catalog(
             "Product": p["Label"].as_str().unwrap_or("Unknown"),
             "Quality": p["Quality"].as_str().unwrap_or("Common"),
             "Slot": p["Slot"].as_str().unwrap_or("Unknown"),
-            "AssetPackage": "", 
+            "AssetPackage": "",
             "AssetPath": "",
             "image_url": p["Thumbnail"].as_str().unwrap_or("")
         }));
@@ -124,7 +120,5 @@ async fn handle_trade_in(
 }
 
 async fn handle_get_drops() -> Result<Json<Value>, String> {
-    // This requires a client, but we'll use a generic one or cache it
-    // For now, return a placeholder or allow passing token
     Ok(Json(json!({ "status": "Requires session" })))
 }

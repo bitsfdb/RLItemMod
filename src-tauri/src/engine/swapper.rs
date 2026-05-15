@@ -51,25 +51,38 @@ pub fn infer_name_pairs(target: &Item, donor: &Item) -> Vec<(String, String)> {
 }
 
 pub fn swap_asset(target: &Item, donor: &Item, game_dir: &Path) -> Result<(), String> {
-    let target_upk_path = game_dir.join("TAGame").join("CookedPCConsole").join(format!("{}.upk", target.asset_package));
-    let donor_upk_path = game_dir.join("TAGame").join("CookedPCConsole").join(format!("{}.upk", donor.asset_package));
+    if target.asset_package.is_empty() {
+        return Err(format!("Target item '{}' has no asset package in the database", target.product));
+    }
+    if donor.asset_package.is_empty() {
+        return Err(format!("Donor item '{}' has no asset package in the database", donor.product));
+    }
+
+    let target_pkg = if target.asset_package.ends_with(".upk") {
+        target.asset_package.clone()
+    } else {
+        format!("{}.upk", target.asset_package)
+    };
+    let donor_pkg = if donor.asset_package.ends_with(".upk") {
+        donor.asset_package.clone()
+    } else {
+        format!("{}.upk", donor.asset_package)
+    };
+
+    let target_upk_path = game_dir.join(&target_pkg);
+    let donor_upk_path = game_dir.join(&donor_pkg);
 
     if !target_upk_path.exists() { return Err(format!("Target UPK not found: {:?}", target_upk_path)); }
     if !donor_upk_path.exists() { return Err(format!("Donor UPK not found: {:?}", donor_upk_path)); }
 
-    // Backup
     let bak_path = target_upk_path.with_extension("upk.bak");
     if !bak_path.exists() {
         std::fs::copy(&target_upk_path, &bak_path).map_err(|e| e.to_string())?;
     }
 
-    // Load target
     let target_bytes = std::fs::read(&target_upk_path).map_err(|e| e.to_string())?;
     let mut reader = std::io::Cursor::new(&target_bytes);
     let summary = parse_file_summary(&mut reader).map_err(|e| e.to_string())?;
-    
-    // For now, we only support plain packages in this turn
-    // (Full decryption/decompression integration will be in the next Turn)
     if summary.compression_flags != 0 {
         return Err("Compressed packages are not yet supported in native swap (Phase 3 in progress)".to_string());
     }
@@ -77,16 +90,14 @@ pub fn swap_asset(target: &Item, donor: &Item, game_dir: &Path) -> Result<(), St
     let package = ParsedPackage {
         file_path: target_upk_path.clone(),
         summary,
-        names: Vec::new(), // TODO: populate tables
+        names: Vec::new(),
         imports: Vec::new(),
         exports: Vec::new(),
         file_bytes: target_bytes,
     };
 
-    // Perform FName rename swap
     let pairs = infer_name_pairs(target, donor);
     let modified = apply_name_pairs(&package, &pairs).map_err(|e| e.to_string())?;
-    
     std::fs::write(&target_upk_path, modified).map_err(|e| e.to_string())?;
 
     Ok(())

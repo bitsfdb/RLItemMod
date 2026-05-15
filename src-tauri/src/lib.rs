@@ -59,53 +59,51 @@ async fn get_items(app: tauri::AppHandle) -> Result<Vec<Item>, String> {
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     let cache_path = config_dir.join("items.json");
 
-    let url = "https://velocityrl.me/items.json";
+    fn has_asset_data(items: &[Item]) -> bool {
+        items.iter().any(|i| !i.asset_package.is_empty())
+    }
 
+    fn parse_items(content: &str) -> Option<Vec<Item>> {
+        if let Ok(resp) = serde_json::from_str::<ItemsResponse>(content) {
+            let items = match resp {
+                ItemsResponse::Database { items } => items,
+                ItemsResponse::List(items) => items,
+            };
+            if !items.is_empty() {
+                return Some(items);
+            }
+        }
+        None
+    }
+
+    let candidate_paths = vec![
+        std::path::PathBuf::from("python/items.json"),
+        std::path::PathBuf::from("../python/items.json"),
+        std::path::PathBuf::from("../../src-tauri/python/items.json"),
+        app.path().resolve("python/items.json", tauri::path::BaseDirectory::Resource).unwrap_or_default(),
+    ];
+
+    for path in &candidate_paths {
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Some(items) = parse_items(&content) {
+                    if has_asset_data(&items) {
+                        let _ = ITEMS_CACHE.set(items.clone());
+                        return Ok(items);
+                    }
+                }
+            }
+        }
+    }
+
+    let url = "https://velocityrl.me/items.json";
     let client = reqwest::Client::new();
-    
     if let Ok(resp) = client.get(url).send().await {
         if let Ok(content) = resp.text().await {
-            if let Ok(resp) = serde_json::from_str::<ItemsResponse>(&content) {
-                let items = match resp {
-                    ItemsResponse::Database { items } => items,
-                    ItemsResponse::List(items) => items,
-                };
-                fs::create_dir_all(&config_dir).ok();
-                fs::write(&cache_path, &content).ok();
-                let _ = ITEMS_CACHE.set(items.clone());
-                return Ok(items);
-            }
-        }
-    }
-
-    if cache_path.exists() {
-        if let Ok(content) = fs::read_to_string(&cache_path) {
-            if let Ok(resp) = serde_json::from_str::<ItemsResponse>(&content) {
-                let items = match resp {
-                    ItemsResponse::Database { items } => items,
-                    ItemsResponse::List(items) => items,
-                };
-                let _ = ITEMS_CACHE.set(items.clone());
-                return Ok(items);
-            }
-        }
-    }
-
-    if let Ok(content) = fs::read_to_string("../items.csv") {
-        // Simple conversion inline or use mod csv_converter (needs registration)
-        // For now, we'll let the API handle the heavy lifting, 
-        // but it's good to have it here as a fallback.
-    }
-
-    let resource_path = app.path().resolve("python/items.json", tauri::path::BaseDirectory::Resource).ok();
-    if let Some(path) = resource_path {
-        if path.exists() {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(resp) = serde_json::from_str::<ItemsResponse>(&content) {
-                    let items = match resp {
-                        ItemsResponse::Database { items } => items,
-                        ItemsResponse::List(items) => items,
-                    };
+            if let Some(items) = parse_items(&content) {
+                if has_asset_data(&items) {
+                    fs::create_dir_all(&config_dir).ok();
+                    fs::write(&cache_path, &content).ok();
                     let _ = ITEMS_CACHE.set(items.clone());
                     return Ok(items);
                 }
@@ -113,7 +111,18 @@ async fn get_items(app: tauri::AppHandle) -> Result<Vec<Item>, String> {
         }
     }
 
-    Err("Failed to parse items database".into())
+    if cache_path.exists() {
+        if let Ok(content) = fs::read_to_string(&cache_path) {
+            if let Some(items) = parse_items(&content) {
+                if has_asset_data(&items) {
+                    let _ = ITEMS_CACHE.set(items.clone());
+                    return Ok(items);
+                }
+            }
+        }
+    }
+
+    Err("Failed to load items database with asset data".into())
 }
 
 #[tauri::command]
@@ -142,11 +151,9 @@ async fn save_config(app: tauri::AppHandle, config: Config) -> Result<(), String
 async fn get_backups(app: tauri::AppHandle) -> Result<Vec<BackupFile>, String> {
     let config = get_config(app.clone()).await?;
     if config.game_dir.is_empty() { return Ok(vec![]); }
-    
     let items = get_items(app.clone()).await.unwrap_or_default();
     let mut backups = Vec::new();
     let dir = PathBuf::from(&config.game_dir);
-    
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -155,18 +162,14 @@ async fn get_backups(app: tauri::AppHandle) -> Result<Vec<BackupFile>, String> {
                 let clean_name = file_name.to_lowercase()
                     .replace(".bak", "")
                     .replace(".upk", "");
-                
                 let display_name = items.iter()
                     .find(|i| {
                         let db_pkg = i.asset_package.to_lowercase().replace(".upk", "");
                         if db_pkg.is_empty() || db_pkg == "none" { return false; }
-                        
                         if db_pkg == clean_name { return true; }
-                        
                         if db_pkg.len() > 4 && (clean_name.contains(&db_pkg) || db_pkg.contains(&clean_name)) {
                             return true;
                         }
-                        
                         false
                     })
                     .map(|i| i.product.clone())
@@ -204,9 +207,7 @@ async fn check_integrity(app: tauri::AppHandle) -> Result<bool, String> {
         Some(p) => p,
         None => return Ok(true),
     };
-    
     let expected_hash = fs::read_to_string(hash_path).map_err(|e| e.to_string())?.trim().to_lowercase();
-    
     let sidecar_name = "velocity-engine";
     #[cfg(target_os = "windows")]
     let sidecar_file = format!("{}-x86_64-pc-windows-msvc.exe", sidecar_name);
@@ -225,7 +226,6 @@ async fn check_integrity(app: tauri::AppHandle) -> Result<bool, String> {
     let mut hasher = Sha256::new();
     hasher.update(&file_bytes);
     let actual_hash = hex::encode(hasher.finalize()).to_lowercase();
-    
     if actual_hash != expected_hash {
         return Err(format!("Integrity mismatch! Engine compromised."));
     }
@@ -293,7 +293,6 @@ async fn fetch_catalog(app: tauri::AppHandle, token: String, account: String) ->
         .arg("--token").arg(token)
         .arg("--account").arg(account)
         .output().await.map_err(|e| e.to_string())?;
-    
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         Ok(stdout)
@@ -305,43 +304,56 @@ async fn fetch_catalog(app: tauri::AppHandle, token: String, account: String) ->
 #[tauri::command]
 async fn apply_swap(app: tauri::AppHandle, owned_id: String, wanted_id: String) -> Result<String, String> {
     let items = get_items(app.clone()).await?;
-    
     let target = items.iter().find(|i| i.id.to_string() == owned_id).ok_or("Target item not found")?;
     let donor = items.iter().find(|i| i.id.to_string() == wanted_id).ok_or("Donor item not found")?;
+
+    if target.asset_package.is_empty() {
+        return Err(format!("Target item '{}' has no asset package in the database", target.product));
+    }
+    if donor.asset_package.is_empty() {
+        return Err(format!("Donor item '{}' has no asset package in the database", donor.product));
+    }
 
     let config = get_config(app.clone()).await?;
     if config.game_dir.is_empty() { return Err("Game directory not set".to_string()); }
     let game_dir = std::path::PathBuf::from(&config.game_dir);
-    
-    let e_target = crate::engine::swapper::Item {
-        id: serde_json::json!(target.id),
-        product: target.product.clone(),
-        asset_package: target.asset_package.clone(),
-        asset_path: "".to_string(), // TODO: add asset_path to Item struct
-        slot: target.slot.clone(),
-    };
-    let e_donor = crate::engine::swapper::Item {
-        id: serde_json::json!(donor.id),
-        product: donor.product.clone(),
-        asset_package: donor.asset_package.clone(),
-        asset_path: "".to_string(),
-        slot: donor.slot.clone(),
-    };
 
-    crate::engine::swapper::swap_asset(&e_target, &e_donor, &game_dir).map_err(|e| e.to_string())?;
-    
-    Ok("Swap completed successfully (Native)".to_string())
+    let scripts_dir = ensure_scripts(&app)?;
+
+    let output = std::process::Command::new("python")
+        .arg(scripts_dir.join("rl_asset_swapper.py"))
+        .arg("--items").arg(scripts_dir.join("items.json"))
+        .arg("--keys").arg(scripts_dir.join("keys.txt"))
+        .arg("--donor-dir").arg(&game_dir)
+        .arg("--output-dir").arg(&game_dir)
+        .arg("--key-source-dir").arg(&game_dir)
+        .arg("--target").arg(&owned_id)
+        .arg("--donor").arg(&wanted_id)
+        .arg("--slot").arg(&target.slot)
+        .arg("--auto-swap")
+        .arg("--no-gui")
+        .arg("--overwrite")
+        .arg("--preserve-header-offsets")
+        .output()
+        .map_err(|e| format!("Failed to run Python engine: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if output.status.success() {
+        Ok(format!("Swap completed: {} → {}\n{}", donor.product, target.product, stdout))
+    } else {
+        Err(format!("Swap failed:\n{}\n{}", stdout, stderr))
+    }
 }
 
 #[tauri::command]
 async fn restore_single_backup(_app: tauri::AppHandle, path: String) -> Result<(), String> {
     let bak_path = PathBuf::from(&path);
     if !bak_path.exists() { return Err("Backup file not found".into()); }
-    
     let original_path = bak_path.with_extension("");
     fs::copy(&bak_path, &original_path).map_err(|e| e.to_string())?;
     fs::remove_file(&bak_path).map_err(|e| e.to_string())?;
-    
     Ok(())
 }
 
